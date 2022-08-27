@@ -4,9 +4,9 @@ RM=rm -f
 
 CPPFLAGS=-g -Wall -pthread -I /usr/include/ffmpeg
 LDFLAGS=-g
-LDLIBS=-lavformat -lavcodec -lavutil -lxcb
+LDLIBS=-lavformat -lavcodec -lavdevice -lavutil -lswscale
 
-SRCS=main.cpp xgrab.cpp
+SRCS=main.cpp
 OBJS=$(subst .cpp,.o,$(SRCS))
 
 all: main
