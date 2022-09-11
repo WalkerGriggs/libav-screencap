@@ -1,69 +1,45 @@
+// main.cpp -*- c++ -*-
+
+/*
+ * MIT License
+ *
+ * Copyright (c) 2022 Walker Griggs
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+/**
+ * @file main.cpp
+ *
+ * @brief Transcodes frames from X11 server to X264, written to an MP4
+ *        container.
+ *
+ * @author Walker Griggs (walker@walkergriggs.com)
+ */
+
 #include <iostream>
 #include <chrono>
+#include <functional>
 
 #include "libav.hpp"
 
 int frames = 0;
-
-int encode_video(DecoderContext& input_avcc, EncoderContext& output_avcc, FormatContext& output_avfc, Frame& frame)
-{
-  if(frame) {
-    frame->pict_type = AV_PICTURE_TYPE_NONE;
-  }
-
-  auto scale_frame = frame.scale(frame->width, frame->height, AV_PIX_FMT_YUV420P);
-  scale_frame->pts = frames++ * output_avcc->time_base.num;
-  scale_frame->pkt_dts = scale_frame->pts;
-
-  Packet output_packet = Packet::alloc();
-  if (!output_packet) {
-    return -1;
-  }
-
-  int res = avcodec_send_frame(output_avcc.get(), scale_frame.get());
-
-  while (res >= 0) {
-    res = avcodec_receive_packet(output_avcc.get(), output_packet.get());
-    if (res == AVERROR(EAGAIN) || res == AVERROR_EOF) {
-      break;
-    } else if (res < 0) {
-      return -1;
-    }
-
-    output_packet->stream_index = 0; // TODO
-
-    if(res = av_write_frame(output_avfc.get(), output_packet.get()); res < 0) {
-      return res;
-    }
-  }
-
-  return 0;
-}
-
-int transcode_video(DecoderContext& input_avcc, EncoderContext& output_avcc, FormatContext& output_avfc, Packet& packet, Frame& frame)
-{
-  int res = avcodec_send_packet(input_avcc.get(), packet.get());
-  if(res > 0) {
-    return res;
-  }
-
-  while(res >= 0) {
-    res = avcodec_receive_frame(input_avcc.get(), frame.get());
-    if (res == AVERROR(EAGAIN) || res == AVERROR_EOF) {
-      break;
-    } else if (res < 0) {
-      return res;
-    }
-
-    if(encode_video(input_avcc, output_avcc, output_avfc, frame)) {
-      return -1;
-    }
-
-    av_frame_unref(frame.get());
-  }
-
-  return 0;
-}
 
 int setup_encoder_context(DecoderContext& decoder, EncoderContext& encoder, AVRational timebase)
 {
@@ -88,11 +64,6 @@ int main(int argc, char **argv) {
   const AVInputFormat *input_format = av_find_input_format("x11grab");
   if (!input_format) {
     throw std::runtime_error("Failed to find input format");
-  }
-
-  Frame frame = Frame::alloc();
-  if (!frame) {
-    throw std::runtime_error("Failed to allocate a decoder frame");
   }
 
   Packet packet = Packet::alloc();
@@ -148,6 +119,23 @@ int main(int argc, char **argv) {
   }
 
   /*
+   * Define codec callbacks
+   */
+
+
+  std::function<int(Packet packet)> encode_callback = [&](Packet packet) {
+    return av_write_frame(output_avfc.get(), packet.get());
+  };
+
+  std::function<int(Frame frame)> decode_callback = [&](Frame frame) {
+    auto scale_frame = frame.scale(frame->width, frame->height, AV_PIX_FMT_YUV420P);
+    scale_frame->pts = frames++ * output_avcc->time_base.num;
+    scale_frame->pkt_dts = scale_frame->pts;
+
+    return output_avcc.send_frame(scale_frame, encode_callback);
+  };
+
+  /*
    * Run it!
    */
 
@@ -158,7 +146,7 @@ int main(int argc, char **argv) {
     if (std::chrono::duration_cast<std::chrono::seconds>(ClockType::now() - time_start).count() >= 7) {
       break;
     }
-    transcode_video(input_avcc, output_avcc, output_avfc, packet, frame);
+    input_avcc.send_packet(packet, decode_callback);
   }
 
   av_write_trailer(output_avfc.get());

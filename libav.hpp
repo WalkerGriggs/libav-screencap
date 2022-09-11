@@ -1,3 +1,29 @@
+// libav.hpp -*- c++ -*-
+
+/*
+ * MIT License
+ *
+ * Copyright (c) 2022 Walker Griggs (walker@walkergriggs.com)
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -114,6 +140,34 @@ public:
   {
     return avcodec_open2(get(), NULL, NULL);
   }
+
+  int send_frame(Frame& frame, std::function<int(Packet)> fn)
+  {
+    if(frame) {
+      frame->pict_type = AV_PICTURE_TYPE_NONE;
+    }
+
+    int res = avcodec_send_frame(get(), frame.get());
+
+    while (res >= 0) {
+      auto packet = Packet::alloc();
+      res = avcodec_receive_packet(get(), packet.get());
+      if (res == AVERROR(EAGAIN) || res == AVERROR_EOF) {
+        break;
+      } else if (res < 0) {
+        return -1;
+      }
+
+      packet->stream_index = 0; // TODO
+
+      res = fn(std::move(packet));
+      if (res < 0) {
+        return res;
+      }
+    }
+
+    return 0;
+  }
 };
 
 class DecoderContext : public CodecContextPtr {
@@ -144,6 +198,28 @@ public:
       return DecoderContext(NULL, [](AVCodecContext*) {});
     }
     return ctx;
+  }
+
+  int send_packet(Packet& packet, std::function<int(Frame)> fn)
+  {
+    int res = avcodec_send_packet(get(), packet.get());
+
+    while(res >= 0) {
+      auto frame = Frame::alloc();
+      res = avcodec_receive_frame(get(), frame.get());
+      if (res == AVERROR(EAGAIN) || res == AVERROR_EOF) {
+        break;
+      } else if (res < 0) {
+        return res;
+      }
+
+      res = fn(std::move(frame));
+      if (res < 0) {
+        return res;
+      }
+    }
+
+    return 0;
   }
 };
 
