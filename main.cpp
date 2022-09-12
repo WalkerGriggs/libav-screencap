@@ -39,25 +39,6 @@
 
 #include "libav.hpp"
 
-int frames = 0;
-
-int setup_encoder_context(DecoderContext& decoder, EncoderContext& encoder, AVRational timebase)
-{
-  av_opt_set(encoder->priv_data, "preset", "fast", 0);
-
-  encoder->pix_fmt             = AV_PIX_FMT_YUV420P;
-  encoder->height              = decoder->height;
-  encoder->width               = decoder->width;
-  encoder->sample_aspect_ratio = decoder->sample_aspect_ratio;
-  encoder->bit_rate            = 2 * 1000 * 1000;
-  encoder->rc_buffer_size      = 4 * 1000 * 1000;
-  encoder->rc_max_rate         = 2 * 1000 * 1000;
-  encoder->rc_min_rate         = 2.5 * 1000 * 1000;
-  encoder->time_base           = timebase;
-
-  return 0;
-}
-
 int main(int argc, char **argv) {
   avdevice_register_all();
 
@@ -70,6 +51,8 @@ int main(int argc, char **argv) {
   if (!packet) {
     throw std::runtime_error("Failed to allocate a decoder packet");
   }
+
+  int frames = 0;
 
 
   /*
@@ -88,6 +71,9 @@ int main(int argc, char **argv) {
     throw std::runtime_error("Failed to allocate the input codec context");
   }
 
+  auto framerate = av_guess_frame_rate(input_avfc.get(), input_avs, NULL);
+  auto timebase = av_inv_q(framerate);
+
   /*
    * Setup encoder
    */
@@ -102,9 +88,16 @@ int main(int argc, char **argv) {
     throw std::runtime_error("Failed to allocate the output codec context");
   }
 
-  auto framerate = av_guess_frame_rate(input_avfc.get(), input_avs, NULL);
-  auto timebase = av_inv_q(framerate);
-  setup_encoder_context(input_avcc, output_avcc, timebase);
+  av_opt_set(output_avcc->priv_data, "preset", "fast", 0);
+  output_avcc->pix_fmt             = AV_PIX_FMT_YUV420P;
+  output_avcc->height              = input_avcc->height;
+  output_avcc->width               = input_avcc->width;
+  output_avcc->sample_aspect_ratio = input_avcc->sample_aspect_ratio;
+  output_avcc->bit_rate            = 2 * 1000 * 1000;
+  output_avcc->rc_buffer_size      = 4 * 1000 * 1000;
+  output_avcc->rc_max_rate         = 2 * 1000 * 1000;
+  output_avcc->rc_min_rate         = 2.5 * 1000 * 1000;
+  output_avcc->time_base           = timebase;
 
   if (output_avcc.open() < 0) {
     throw std::runtime_error("Failed to open the output codec context");
@@ -121,7 +114,6 @@ int main(int argc, char **argv) {
   /*
    * Define codec callbacks
    */
-
 
   std::function<int(Packet packet)> encode_callback = [&](Packet packet) {
     return av_write_frame(output_avfc.get(), packet.get());
