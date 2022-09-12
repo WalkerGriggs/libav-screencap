@@ -36,8 +36,17 @@
 #include <iostream>
 #include <chrono>
 #include <functional>
+#include <signal.h>
 
 #include "libav.hpp"
+
+volatile sig_atomic_t stop;
+
+void signal_handler(int n)
+{
+  std::cout << "Gracefully stopping" << std::endl;
+  stop = 1;
+}
 
 int main(int argc, char **argv) {
   avdevice_register_all();
@@ -131,11 +140,10 @@ int main(int argc, char **argv) {
    * Run it!
    */
 
-  using ClockType = std::chrono::system_clock;
-  auto time_start = ClockType::now();
+  signal(SIGINT, &signal_handler);
 
-  while(av_read_frame(input_avfc.get(), packet.get()) >= 0) {
-    if (std::chrono::duration_cast<std::chrono::seconds>(ClockType::now() - time_start).count() >= 7) {
+  while(!stop) {
+    if (av_read_frame(input_avfc.get(), packet.get()) < 0) {
       break;
     }
     input_avcc.send_packet(packet, decode_callback);
