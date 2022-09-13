@@ -42,13 +42,26 @@
 
 volatile sig_atomic_t stop;
 
+/** Flip the atomic stop flag to gracefully end the program.
+ *
+ * @param n signal number
+ */
 void signal_handler(int n)
 {
   std::cout << "Gracefully stopping" << std::endl;
   stop = 1;
 }
 
+/** Run screencap
+ *
+ * Main's scope includes codec setup, callback definitions, and the main read
+ * loop.
+ *
+ * @param argc number of arguments
+ * @param argv the arguments themselves
+ */
 int main(int argc, char **argv) {
+  signal(SIGINT, &signal_handler);
   avdevice_register_all();
 
   const AVInputFormat *input_format = av_find_input_format("x11grab");
@@ -63,13 +76,17 @@ int main(int argc, char **argv) {
 
   int frames = 0;
 
-
-  /*
-   * Setup decoder
+  /** Setup the decoder format and input context.
+   *
+   * These calls:
+   *   1. allocates and opens the input format context.
+   *   2. reads stream metadata from the input format context.
+   *   3. allocates and opens the appropriate decoder / codec context.
+   *   4. find the input timebase.
    */
 
   auto input_avfc = FormatContext::open_input_format(input_format);
-  if(!input_avfc.get()) {
+  if (!input_avfc.get()) {
     throw std::runtime_error("Failed to open the input format");
   }
 
@@ -83,17 +100,23 @@ int main(int argc, char **argv) {
   auto framerate = av_guess_frame_rate(input_avfc.get(), input_avs, NULL);
   auto timebase = av_inv_q(framerate);
 
-  /*
-   * Setup encoder
+  /** Setup the encoder format and input context.
+   *
+   * These calls:
+   *   1. allocates and opens the output format context.
+   *   2. allocates and opens the appropriate encoder / codec context.
+   *   3. set all relevant codec context fields (derived from the decoder)
+   *   4. creates a video stream for the output format context
+   *   5. writes the file header to the output format context.
    */
 
   auto output_avfc = FormatContext::open_output("out.mp4");
-  if(!output_avfc.get()) {
+  if (!output_avfc.get()) {
     throw std::runtime_error("Failed to open the output format");
   }
 
   auto output_avcc = EncoderContext::alloc_context_by_name("libx264");
-  if(!output_avcc.get()) {
+  if (!output_avcc.get()) {
     throw std::runtime_error("Failed to allocate the output codec context");
   }
 
@@ -112,19 +135,27 @@ int main(int argc, char **argv) {
     throw std::runtime_error("Failed to open the output codec context");
   }
 
-  if (output_avfc.create_stream(output_avcc) < 0) {
+  int stream_idx = output_avfc.create_stream(output_avcc);
+  if (stream_idx < 0) {
     throw std::runtime_error("Failed to create new output stream");
   }
 
-  if(avformat_write_header(output_avfc.get(), NULL) < 0) {
+  if (avformat_write_header(output_avfc.get(), NULL) < 0) {
     throw std::runtime_error("Failed to write output headers");
   }
 
-  /*
-   * Define codec callbacks
+  /** Define the codec callbacks
+   *
+   * encode_callback is passed the encoded packet and writes it to the output
+   * format context.
+   *
+   * decode_callback is passed the decoded frame which it scales to set the
+   * picture's strobe and sends to the encoder.
    */
 
   std::function<int(Packet packet)> encode_callback = [&](Packet packet) {
+    packet->stream_index = stream_idx;
+
     return av_write_frame(output_avfc.get(), packet.get());
   };
 
@@ -136,11 +167,11 @@ int main(int argc, char **argv) {
     return output_avcc.send_frame(scale_frame, encode_callback);
   };
 
-  /*
-   * Run it!
+  /** Run it!
+   *
+   * Read from the input format context, packet by packet, until either the
+   * signal handler is called or the program hits a runtime error.
    */
-
-  signal(SIGINT, &signal_handler);
 
   while(!stop) {
     if (av_read_frame(input_avfc.get(), packet.get()) < 0) {
